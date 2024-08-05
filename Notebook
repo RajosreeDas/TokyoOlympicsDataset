@@ -1,0 +1,63 @@
+%pip install delta-spark
+
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import *
+
+spark = SparkSession.builder \
+    .appName("TokyoOlympicsBronze") \
+    .getOrCreate()
+
+# Load the raw data from CSV into a DataFrame
+raw_df = spark.read.option("header", "true").csv("/path/to/tokyo_olympics.csv")
+
+# Write the raw data to the Bronze layer as Delta Lake table
+raw_df.write.format("delta").mode("overwrite").save("/mnt/bronze/tokyo_olympics")
+
+# Create a Delta table
+spark.sql("""
+    CREATE TABLE IF NOT EXISTS bronze_tokyo_olympics
+    USING DELTA
+    LOCATION '/mnt/bronze/tokyo_olympics'
+""")
+
+
+#silver layer
+bronze_df = spark.read.format("delta").load("/mnt/bronze/tokyo_olympics")
+
+# Perform data cleaning and transformations
+silver_df = bronze_df \
+    .withColumn("Event", trim(col("Event"))) \
+    .withColumn("Medal", when(col("Medal") == "", None).otherwise(col("Medal")))
+
+# Write the cleaned data to the Silver layer as Delta Lake table
+silver_df.write.format("delta").mode("overwrite").save("/mnt/silver/tokyo_olympics")
+
+# Create a Delta table
+spark.sql("""
+    CREATE TABLE IF NOT EXISTS silver_tokyo_olympics
+    USING DELTA
+    LOCATION '/mnt/silver/tokyo_olympics'
+""")
+
+#gold layer
+silver_df = spark.read.format("delta").load("/mnt/silver/tokyo_olympics")
+
+# Perform aggregations for analysis
+gold_df = silver_df.groupBy("Country", "Medal") \
+    .agg(count("*").alias("Medal_Count"))
+
+# Write the aggregated data to the Gold layer as Delta Lake table
+gold_df.write.format("delta").mode("overwrite").save("/mnt/gold/tokyo_olympics_medals")
+
+# Create a Delta table
+spark.sql("""
+    CREATE TABLE IF NOT EXISTS gold_tokyo_olympics_medals
+    USING DELTA
+    LOCATION '/mnt/gold/tokyo_olympics_medals'
+""")
+
+#querying the gold layer
+spark.sql("""
+    SELECT * FROM gold_tokyo_olympics_medals
+    ORDER BY Medal_Count DESC
+""").show()
